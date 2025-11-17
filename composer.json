@@ -1,0 +1,14 @@
+{
+    "name": "glorious/church-events-calendar",
+    "description": "Scaffolding for the Church Events Calendar WordPress plugin.",
+    "type": "wordpress-plugin",
+    "license": "GPL-2.0-or-later",
+    "require": {
+        "php": ">=8.1"
+    },
+    "autoload": {
+        "psr-4": {
+            "Glorious\\\\ChurchEvents\\\\": "src/"
+        }
+    }
+}
