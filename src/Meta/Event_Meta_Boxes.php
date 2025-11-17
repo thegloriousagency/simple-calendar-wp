@@ -7,8 +7,12 @@ namespace Glorious\ChurchEvents\Meta;
 use DateTimeImmutable;
 use Glorious\ChurchEvents\Post_Types\Event_Post_Type;
 use Glorious\ChurchEvents\Support\Hooks;
+use Recurr\Exception\InvalidRRule;
+use Recurr\Rule as RecurrRule;
 use WP_Post;
 use function add_meta_box;
+use function array_map;
+use function array_unique;
 use function checked;
 use function current_user_can;
 use function defined;
@@ -16,9 +20,15 @@ use function esc_attr;
 use function esc_html;
 use function esc_html_e;
 use function esc_html__;
+use function explode;
+use function implode;
 use function in_array;
+use function sort;
 use function sanitize_text_field;
 use function selected;
+use function strpos;
+use function strtoupper;
+use function trim;
 use function wp_nonce_field;
 use function wp_unslash;
 use function wp_verify_nonce;
@@ -28,6 +38,26 @@ use function wp_verify_nonce;
  */
 final class Event_Meta_Boxes
 {
+    private const WEEKDAY_NAME_TO_CODE = [
+        'sunday' => 'SU',
+        'monday' => 'MO',
+        'tuesday' => 'TU',
+        'wednesday' => 'WE',
+        'thursday' => 'TH',
+        'friday' => 'FR',
+        'saturday' => 'SA',
+    ];
+
+    private const WEEKDAY_CODE_TO_NAME = [
+        'SU' => 'sunday',
+        'MO' => 'monday',
+        'TU' => 'tuesday',
+        'WE' => 'wednesday',
+        'TH' => 'thursday',
+        'FR' => 'friday',
+        'SA' => 'saturday',
+    ];
+
     private Event_Meta_Repository $repository;
 
     public function __construct(Event_Meta_Repository $repository)
@@ -64,6 +94,13 @@ final class Event_Meta_Boxes
         wp_nonce_field('church_event_meta', 'church_event_meta_nonce');
 
         $meta = $this->repository->get_meta((int) $post->ID);
+        $parsed_rrule = $this->parse_weekly_rrule($meta[Event_Meta_Repository::META_RRULE] ?? '');
+
+        if ($parsed_rrule['enabled']) {
+            $meta[Event_Meta_Repository::META_IS_RECURRING] = true;
+            $meta[Event_Meta_Repository::META_RECURRENCE_INTERVAL] = $parsed_rrule['interval'];
+            $meta[Event_Meta_Repository::META_RECURRENCE_WEEKDAYS] = $parsed_rrule['weekdays'];
+        }
         $weekdays = [
             'monday' => esc_html__('Monday', 'church-events-calendar'),
             'tuesday' => esc_html__('Tuesday', 'church-events-calendar'),
@@ -206,6 +243,15 @@ final class Event_Meta_Boxes
         $end_meridiem = isset($_POST['_event_end_meridiem'])
             ? sanitize_text_field(wp_unslash($_POST['_event_end_meridiem']))
             : '';
+        $recurrence_weekdays = isset($_POST[Event_Meta_Repository::META_RECURRENCE_WEEKDAYS])
+            ? array_map(
+                static fn($day): string => sanitize_text_field((string) $day),
+                (array) wp_unslash($_POST[Event_Meta_Repository::META_RECURRENCE_WEEKDAYS])
+            )
+            : [];
+        $recurrence_interval = isset($_POST[Event_Meta_Repository::META_RECURRENCE_INTERVAL])
+            ? (int) wp_unslash($_POST[Event_Meta_Repository::META_RECURRENCE_INTERVAL])
+            : 1;
 
         $data = [
             Event_Meta_Repository::META_START => $this->combine_datetime($start_date, $start_hour, $start_minute, $start_meridiem),
@@ -215,13 +261,15 @@ final class Event_Meta_Boxes
                 : '',
             Event_Meta_Repository::META_ALL_DAY => ! empty($_POST[Event_Meta_Repository::META_ALL_DAY]),
             Event_Meta_Repository::META_IS_RECURRING => ! empty($_POST[Event_Meta_Repository::META_IS_RECURRING]),
-            Event_Meta_Repository::META_RECURRENCE_INTERVAL => isset($_POST[Event_Meta_Repository::META_RECURRENCE_INTERVAL])
-                ? wp_unslash($_POST[Event_Meta_Repository::META_RECURRENCE_INTERVAL])
-                : 1,
-            Event_Meta_Repository::META_RECURRENCE_WEEKDAYS => isset($_POST[Event_Meta_Repository::META_RECURRENCE_WEEKDAYS])
-                ? wp_unslash((array) $_POST[Event_Meta_Repository::META_RECURRENCE_WEEKDAYS])
-                : [],
+            Event_Meta_Repository::META_RECURRENCE_INTERVAL => max(1, $recurrence_interval),
+            Event_Meta_Repository::META_RECURRENCE_WEEKDAYS => $recurrence_weekdays,
         ];
+
+        $data[Event_Meta_Repository::META_RRULE] = $this->build_weekly_rrule(
+            (bool) $data[Event_Meta_Repository::META_IS_RECURRING],
+            (int) $data[Event_Meta_Repository::META_RECURRENCE_INTERVAL],
+            $recurrence_weekdays
+        );
 
         $this->repository->save_meta($post_id, $data);
     }
@@ -361,5 +409,97 @@ final class Event_Meta_Boxes
         }
 
         return $minute;
+    }
+
+    /**
+     * Data flow: UI form fields → weekly form state → RRULE string stored in meta.
+     * When editing, the RRULE becomes the canonical source and is parsed back
+     * into form state so legacy weekly controls stay in sync.
+     */
+    private function build_weekly_rrule(bool $enabled, int $interval, array $weekdays): string
+    {
+        if (! $enabled) {
+            return '';
+        }
+
+        $interval = max(1, $interval);
+        $codes = [];
+
+        foreach ($weekdays as $day) {
+            $code = $this->weekday_name_to_code($day);
+            if ($code) {
+                $codes[] = $code;
+            }
+        }
+
+        $codes = array_values(array_unique($codes));
+        sort($codes);
+
+        if (empty($codes)) {
+            return '';
+        }
+
+        return sprintf('FREQ=WEEKLY;INTERVAL=%d;BYDAY=%s', $interval, implode(',', $codes));
+    }
+
+    /**
+     * @return array{enabled: bool, interval: int, weekdays: array<int, string>}
+     */
+    private function parse_weekly_rrule(string $rrule): array
+    {
+        $state = [
+            'enabled' => false,
+            'interval' => 1,
+            'weekdays' => [],
+        ];
+
+        $rrule = trim($rrule);
+        if ($rrule === '') {
+            return $state;
+        }
+
+        $parts = [];
+
+        foreach (explode(';', strtoupper($rrule)) as $segment) {
+            if (strpos($segment, '=') === false) {
+                continue;
+            }
+
+            [$key, $value] = array_map('trim', explode('=', $segment, 2));
+            if ($key !== '') {
+                $parts[$key] = $value;
+            }
+        }
+
+        if (($parts['FREQ'] ?? '') !== 'WEEKLY') {
+            return $state;
+        }
+
+        $interval = isset($parts['INTERVAL']) ? max(1, (int) $parts['INTERVAL']) : 1;
+        $weekdays = [];
+
+        if (isset($parts['BYDAY'])) {
+            foreach (explode(',', $parts['BYDAY']) as $code) {
+                $code = strtoupper(trim($code));
+                if (isset(self::WEEKDAY_CODE_TO_NAME[$code])) {
+                    $weekdays[] = self::WEEKDAY_CODE_TO_NAME[$code];
+                }
+            }
+        }
+
+        $weekdays = array_values(array_unique($weekdays));
+
+        return [
+            'enabled' => true,
+            'interval' => $interval,
+            'weekdays' => $weekdays,
+        ];
+    }
+
+    private function weekday_name_to_code(string $day): ?string
+    {
+        $day = strtolower($day);
+
+        return self::WEEKDAY_NAME_TO_CODE[$day] ?? null;
     }
 }

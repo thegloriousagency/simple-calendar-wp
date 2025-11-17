@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Church Events Calendar
  * Plugin URI: https://glorious.org/plugins/church-events-calendar
- * Description: Lightweight events calendar for churches with clean architecture scaffolding.
+ * Description: 11Lightweight events calendar for churches with clean architecture scaffolding.
  * Version: 0.1.0
  * Author: Glorious
  * Author URI: https://glorious.org

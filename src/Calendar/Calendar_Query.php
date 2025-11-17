@@ -135,58 +135,31 @@ final class Calendar_Query
     }
 
     /**
+     * Expand a single event into concrete occurrences within the requested range.
+     *
+     * Events are first filtered via WP_Query; only the resulting posts have their RRULE
+     * expanded, ensuring we do not iterate over unrelated events.
+     *
      * @return array<int, array{post: WP_Post, start: DateTimeImmutable, end: DateTimeImmutable, meta: array<string, mixed>}>
      */
     private function expand_event(WP_Post $post, DateTimeImmutable $range_start, DateTimeImmutable $range_end): array
     {
         $meta = $this->meta_repository->get_meta($post->ID);
 
-        $startString = $meta[Event_Meta_Repository::META_START] ?? '';
-        $endString = $meta[Event_Meta_Repository::META_END] ?? '';
-
-        if (! $startString || ! $endString) {
+        if (empty($meta[Event_Meta_Repository::META_START]) || empty($meta[Event_Meta_Repository::META_END])) {
             return [];
         }
 
-        $start = new DateTimeImmutable($startString);
-        $end = new DateTimeImmutable($endString);
+        $rule = Recurrence_Rule::fromMeta($post->ID, $this->meta_repository);
+        $occurrences = $this->recurrence_engine->expand($rule, $range_start, $range_end);
 
         $events = [];
 
-        $isRecurring = ! empty($meta[Event_Meta_Repository::META_IS_RECURRING]);
-
-        if ($isRecurring) {
-            $rule = new Recurrence_Rule(
-                $start,
-                $end,
-                $meta[Event_Meta_Repository::META_RECURRENCE_WEEKDAYS] ?? [],
-                (int) ($meta[Event_Meta_Repository::META_RECURRENCE_INTERVAL] ?? 1),
-                null
-            );
-
-            $occurrences = $this->recurrence_engine->get_occurrences(
-                $range_start->format('Y-m-d H:i:s'),
-                $range_end->format('Y-m-d H:i:s'),
-                $rule
-            );
-
-            foreach ($occurrences as $occurrence) {
-                $events[] = [
-                    'post' => $post,
-                    'start' => $occurrence['start'],
-                    'end' => $occurrence['end'],
-                    'meta' => $meta,
-                ];
-            }
-        } else {
-            if ($end < $range_start || $start > $range_end) {
-                return [];
-            }
-
+        foreach ($occurrences as $occurrence) {
             $events[] = [
                 'post' => $post,
-                'start' => $start,
-                'end' => $end,
+                'start' => $occurrence['start'],
+                'end' => $occurrence['end'] ?? $occurrence['start'],
                 'meta' => $meta,
             ];
         }
