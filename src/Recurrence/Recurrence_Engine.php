@@ -7,12 +7,14 @@ namespace Glorious\ChurchEvents\Recurrence;
 use DateInterval;
 use DateTimeImmutable;
 use DateTimeZone;
+use Glorious\ChurchEvents\Support\Log_Helper;
 use Recurr\Rule as RecurrRule;
 use Recurr\Transformer\ArrayTransformer;
 use Recurr\Transformer\Constraint\BetweenConstraint;
 use Throwable;
 use function array_values;
 use function usort;
+use const DATE_ATOM;
 
 /**
  * Expands recurrence rules into concrete datetime instances.
@@ -110,9 +112,19 @@ final class Recurrence_Engine
                     'end' => $end,
                 ];
             }
-        } catch (Throwable) {
-            // TODO: log recurrence expansion failures.
-            return [];
+        } catch (Throwable $exception) {
+            Log_Helper::log(
+                'error',
+                'Recurrence expansion failed.',
+                [
+                    'rrule' => $rule->getRrule(),
+                    'range_start' => $rangeStart->format(DATE_ATOM),
+                    'range_end' => $rangeEnd->format(DATE_ATOM),
+                    'message' => $exception->getMessage(),
+                ]
+            );
+
+            return $this->maybeAddSingleOccurrence($rule, $rangeStart, $rangeEnd, $duration);
         }
 
         return $map;

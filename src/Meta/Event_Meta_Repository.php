@@ -7,6 +7,7 @@ namespace Glorious\ChurchEvents\Meta;
 use DateTimeImmutable;
 use DateTimeZone;
 use Glorious\ChurchEvents\Post_Types\Event_Post_Type;
+use Glorious\ChurchEvents\Support\Location_Helper;
 use function array_intersect;
 use function array_map;
 use function array_values;
@@ -28,6 +29,8 @@ final class Event_Meta_Repository
     public const META_END = '_event_end';
     public const META_ALL_DAY = '_event_all_day';
     public const META_LOCATION = '_event_location';
+    public const META_LOCATION_MODE = '_event_location_mode';
+    public const META_LOCATION_ID = '_event_location_id';
     public const META_IS_RECURRING = '_event_is_recurring';
     public const META_RECURRENCE_WEEKDAYS = '_event_recurrence_weekdays';
     public const META_RECURRENCE_INTERVAL = '_event_recurrence_interval';
@@ -45,6 +48,12 @@ final class Event_Meta_Repository
             self::META_END => sanitize_text_field((string) get_post_meta($post_id, self::META_END, true)),
             self::META_ALL_DAY => (bool) get_post_meta($post_id, self::META_ALL_DAY, true),
             self::META_LOCATION => sanitize_text_field((string) get_post_meta($post_id, self::META_LOCATION, true)),
+            self::META_LOCATION_MODE => $this->sanitize_location_mode(
+                (string) get_post_meta($post_id, self::META_LOCATION_MODE, true)
+            ),
+            self::META_LOCATION_ID => $this->sanitize_location_id(
+                (int) get_post_meta($post_id, self::META_LOCATION_ID, true)
+            ),
             self::META_IS_RECURRING => (bool) get_post_meta($post_id, self::META_IS_RECURRING, true),
             self::META_RECURRENCE_WEEKDAYS => $this->sanitize_weekdays(
                 (array) get_post_meta($post_id, self::META_RECURRENCE_WEEKDAYS, true)
@@ -75,6 +84,12 @@ final class Event_Meta_Repository
         $location = isset($data[self::META_LOCATION])
             ? sanitize_text_field((string) $data[self::META_LOCATION])
             : '';
+        $location_mode = isset($data[self::META_LOCATION_MODE])
+            ? $this->sanitize_location_mode((string) $data[self::META_LOCATION_MODE])
+            : 'default';
+        $location_id = isset($data[self::META_LOCATION_ID])
+            ? $this->sanitize_location_id((int) $data[self::META_LOCATION_ID])
+            : 0;
         $all_day = ! empty($data[self::META_ALL_DAY]);
         $recurring = ! empty($data[self::META_IS_RECURRING]);
         $interval = isset($data[self::META_RECURRENCE_INTERVAL])
@@ -92,6 +107,12 @@ final class Event_Meta_Repository
         $this->persist_meta($post_id, self::META_START, $start);
         $this->persist_meta($post_id, self::META_END, $end);
         $this->persist_meta($post_id, self::META_LOCATION, $location);
+        $this->persist_meta($post_id, self::META_LOCATION_MODE, $location_mode);
+        if ($location_id > 0) {
+            update_post_meta($post_id, self::META_LOCATION_ID, $location_id);
+        } else {
+            delete_post_meta($post_id, self::META_LOCATION_ID);
+        }
         update_post_meta($post_id, self::META_ALL_DAY, $all_day ? '1' : '0');
         update_post_meta($post_id, self::META_IS_RECURRING, $recurring ? '1' : '0');
         update_post_meta($post_id, self::META_RECURRENCE_INTERVAL, $interval);
@@ -209,6 +230,19 @@ final class Event_Meta_Repository
         $rrule = preg_replace('/^RRULE:/i', '', $rrule ?? '') ?? '';
 
         return sanitize_text_field($rrule);
+    }
+
+    private function sanitize_location_mode(string $mode): string
+    {
+        $mode = strtolower(trim($mode));
+        $allowed = ['default', 'custom', 'saved'];
+
+        return in_array($mode, $allowed, true) ? $mode : 'default';
+    }
+
+    private function sanitize_location_id(int $location_id): int
+    {
+        return Location_Helper::sanitize_location_id($location_id);
     }
 
     /**

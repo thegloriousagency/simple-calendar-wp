@@ -3,11 +3,11 @@
         'name' => 'glorious/church-events-calendar',
         'pretty_version' => 'dev-main',
         'version' => 'dev-main',
-        'reference' => '49d004b2e364935510c88fecd03a7034b179f14e',
+        'reference' => 'f82febe002cd7f9587abbc7e4b9c9774a6a5a3af',
         'type' => 'wordpress-plugin',
         'install_path' => __DIR__ . '/../../',
         'aliases' => array(),
-        'dev' => true,
+        'dev' => false,
     ),
     'versions' => array(
         'doctrine/collections' => array(
@@ -31,7 +31,7 @@
         'glorious/church-events-calendar' => array(
             'pretty_version' => 'dev-main',
             'version' => 'dev-main',
-            'reference' => '49d004b2e364935510c88fecd03a7034b179f14e',
+            'reference' => 'f82febe002cd7f9587abbc7e4b9c9774a6a5a3af',
             'type' => 'wordpress-plugin',
             'install_path' => __DIR__ . '/../../',
             'aliases' => array(),

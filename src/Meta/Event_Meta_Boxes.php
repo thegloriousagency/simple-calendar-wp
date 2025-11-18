@@ -5,11 +5,15 @@ declare(strict_types=1);
 namespace Glorious\ChurchEvents\Meta;
 
 use DateTimeImmutable;
+use DateTimeZone;
+use Glorious\ChurchEvents\Admin\Settings;
 use Glorious\ChurchEvents\Post_Types\Event_Post_Type;
 use Glorious\ChurchEvents\Support\Hooks;
+use Glorious\ChurchEvents\Support\Location_Helper;
 use Recurr\Exception\InvalidRRule;
 use Recurr\Rule as RecurrRule;
 use WP_Post;
+use function absint;
 use function add_meta_box;
 use function array_map;
 use function array_unique;
@@ -23,9 +27,9 @@ use function esc_html__;
 use function explode;
 use function implode;
 use function in_array;
-use function sort;
 use function sanitize_text_field;
 use function selected;
+use function sort;
 use function strpos;
 use function strtoupper;
 use function trim;
@@ -56,6 +60,12 @@ final class Event_Meta_Boxes
         'TH' => 'thursday',
         'FR' => 'friday',
         'SA' => 'saturday',
+    ];
+
+    private const FREQUENCY_OPTIONS = [
+        'daily' => 'Daily',
+        'weekly' => 'Weekly',
+        'monthly' => 'Monthly',
     ];
 
     private Event_Meta_Repository $repository;
@@ -94,12 +104,15 @@ final class Event_Meta_Boxes
         wp_nonce_field('church_event_meta', 'church_event_meta_nonce');
 
         $meta = $this->repository->get_meta((int) $post->ID);
-        $parsed_rrule = $this->parse_weekly_rrule($meta[Event_Meta_Repository::META_RRULE] ?? '');
+        $settings = Settings::instance();
+        $form_state = $this->resolve_form_state($meta);
 
-        if ($parsed_rrule['enabled']) {
+        $show_advanced = $settings->is_advanced_recurrence_enabled();
+
+        if ($form_state['enabled']) {
             $meta[Event_Meta_Repository::META_IS_RECURRING] = true;
-            $meta[Event_Meta_Repository::META_RECURRENCE_INTERVAL] = $parsed_rrule['interval'];
-            $meta[Event_Meta_Repository::META_RECURRENCE_WEEKDAYS] = $parsed_rrule['weekdays'];
+            $meta[Event_Meta_Repository::META_RECURRENCE_INTERVAL] = $form_state['interval'];
+            $meta[Event_Meta_Repository::META_RECURRENCE_WEEKDAYS] = $form_state['weekdays'];
         }
         $weekdays = [
             'monday' => esc_html__('Monday', 'church-events-calendar'),
@@ -110,6 +123,9 @@ final class Event_Meta_Boxes
             'saturday' => esc_html__('Saturday', 'church-events-calendar'),
             'sunday' => esc_html__('Sunday', 'church-events-calendar'),
         ];
+        $location_state = $this->resolve_location_form_state($meta, $settings);
+        $location_posts = Location_Helper::get_location_posts();
+        $default_location_label = $settings->get_default_location_string();
         ?>
         <div class="church-event-meta-fields">
             <?php
@@ -147,34 +163,128 @@ final class Event_Meta_Boxes
                     <?php esc_html_e('All Day Event', 'church-events-calendar'); ?>
                 </label>
             </div>
-            <div class="church-event-meta-field">
-                <label for="church-event-location">
-                    <?php esc_html_e('Location', 'church-events-calendar'); ?>
-                </label>
-                <input type="text"
-                    id="church-event-location"
-                    name="<?php echo esc_attr(Event_Meta_Repository::META_LOCATION); ?>"
-                    value="<?php echo esc_attr((string) $meta[Event_Meta_Repository::META_LOCATION]); ?>"
-                    class="widefat"
-                />
+            <div class="church-event-meta-field church-event-meta-field--location">
+                <label><?php esc_html_e('Location', 'church-events-calendar'); ?></label>
+                <fieldset>
+                    <label>
+                        <input type="radio"
+                            name="event_location_mode"
+                            value="default"
+                            data-cec-location-radio
+                            <?php checked($location_state['mode'], 'default'); ?>>
+                        <?php esc_html_e('Use default location (from Settings)', 'church-events-calendar'); ?>
+                        <?php if ($default_location_label !== '') : ?>
+                            <span class="description">
+                                <?php echo esc_html(sprintf(
+                                    /* translators: %s default location */
+                                    __('Current default: %s', 'church-events-calendar'),
+                                    $default_location_label
+                                )); ?>
+                            </span>
+                        <?php else : ?>
+                            <span class="description">
+                                <?php esc_html_e('No default location configured yet.', 'church-events-calendar'); ?>
+                            </span>
+                        <?php endif; ?>
+                    </label><br>
+                    <label>
+                        <input type="radio"
+                            name="event_location_mode"
+                            value="saved"
+                            data-cec-location-radio
+                            <?php checked($location_state['mode'], 'saved'); ?>>
+                        <?php esc_html_e('Use a saved location', 'church-events-calendar'); ?>
+                    </label><br>
+                    <label>
+                        <input type="radio"
+                            name="event_location_mode"
+                            value="custom"
+                            data-cec-location-radio
+                            <?php checked($location_state['mode'], 'custom'); ?>>
+                        <?php esc_html_e('Use custom location text', 'church-events-calendar'); ?>
+                    </label>
+                </fieldset>
+                <div class="church-event-location-control"
+                    data-cec-location-field="saved"
+                    style="<?php echo $location_state['mode'] === 'saved' ? '' : 'display:none;'; ?>">
+                    <label for="church-event-location-saved">
+                        <?php esc_html_e('Saved location', 'church-events-calendar'); ?>
+                    </label>
+                    <select id="church-event-location-saved" name="event_location_saved_id">
+                        <option value="0"><?php esc_html_e('Select a location', 'church-events-calendar'); ?></option>
+                        <?php foreach ($location_posts as $location_post) : ?>
+                            <option value="<?php echo esc_attr((string) $location_post->ID); ?>"
+                                <?php selected($location_state['saved_id'], $location_post->ID); ?>>
+                                <?php echo esc_html($location_post->post_title ?: sprintf(
+                                    __('Location #%d', 'church-events-calendar'),
+                                    $location_post->ID
+                                )); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="church-event-location-control"
+                    data-cec-location-field="custom"
+                    style="<?php echo $location_state['mode'] === 'custom' ? '' : 'display:none;'; ?>">
+                    <label for="church-event-location">
+                        <?php esc_html_e('Custom location', 'church-events-calendar'); ?>
+                    </label>
+                    <input type="text"
+                        id="church-event-location"
+                        name="event_location_custom"
+                        value="<?php echo esc_attr($location_state['custom_value']); ?>"
+                        class="widefat"
+                    />
+                </div>
             </div>
+            <script>
+                document.addEventListener('DOMContentLoaded', function () {
+                    const radios = document.querySelectorAll('[data-cec-location-radio]');
+                    const sections = document.querySelectorAll('[data-cec-location-field]');
+                    const toggle = () => {
+                        const checked = document.querySelector('[data-cec-location-radio]:checked');
+                        const mode = checked ? checked.value : 'default';
+                        sections.forEach(section => {
+                            if (section.getAttribute('data-cec-location-field') === mode) {
+                                section.style.display = '';
+                            } else {
+                                section.style.display = 'none';
+                            }
+                        });
+                    };
+                    radios.forEach(radio => radio.addEventListener('change', toggle));
+                    toggle();
+                });
+            </script>
             <div class="church-event-meta-field church-event-meta-recurring">
                 <label>
                     <input type="checkbox"
                         name="<?php echo esc_attr(Event_Meta_Repository::META_IS_RECURRING); ?>"
-                        value="1" <?php checked($meta[Event_Meta_Repository::META_IS_RECURRING], true); ?>
+                        value="1" <?php checked($form_state['enabled'], true); ?>
                     />
                     <?php esc_html_e('Recurring Event', 'church-events-calendar'); ?>
                 </label>
                 <div class="church-event-recurring-details">
                     <label>
-                        <?php esc_html_e('Repeat Every (weeks)', 'church-events-calendar'); ?>
+                        <?php esc_html_e('Repeat every', 'church-events-calendar'); ?>
                         <input type="number"
                             min="1"
                             name="<?php echo esc_attr(Event_Meta_Repository::META_RECURRENCE_INTERVAL); ?>"
-                            value="<?php echo esc_attr((string) $meta[Event_Meta_Repository::META_RECURRENCE_INTERVAL]); ?>"
+                            value="<?php echo esc_attr((string) $form_state['interval']); ?>"
                         />
                     </label>
+                    <?php if ($show_advanced) : ?>
+                        <label for="cec-recurrence-frequency">
+                            <?php esc_html_e('Frequency', 'church-events-calendar'); ?>
+                        </label>
+                        <select name="cec_recurrence_frequency" id="cec-recurrence-frequency">
+                            <?php foreach (self::FREQUENCY_OPTIONS as $value => $label) : ?>
+                                <option value="<?php echo esc_attr($value); ?>" <?php selected($form_state['frequency'], $value); ?>>
+                                    <?php echo esc_html__($label, 'church-events-calendar'); ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    <?php endif; ?>
                     <fieldset>
                         <legend><?php esc_html_e('Weekdays', 'church-events-calendar'); ?></legend>
                         <?php foreach ($weekdays as $key => $label) : ?>
@@ -182,12 +292,55 @@ final class Event_Meta_Boxes
                                 <input type="checkbox"
                                     name="<?php echo esc_attr(Event_Meta_Repository::META_RECURRENCE_WEEKDAYS); ?>[]"
                                     value="<?php echo esc_attr($key); ?>"
-                                    <?php checked(in_array($key, $meta[Event_Meta_Repository::META_RECURRENCE_WEEKDAYS], true), true); ?>
+                                    <?php checked(in_array($key, $form_state['weekdays'], true), true); ?>
                                 />
                                 <?php echo esc_html($label); ?>
                             </label>
                         <?php endforeach; ?>
                     </fieldset>
+                    <?php if ($show_advanced) : ?>
+                        <?php
+                        $end_count_value = $form_state['end_count'] ? (string) $form_state['end_count'] : '';
+                        $end_date_value = $form_state['end_date'] ?? '';
+                        ?>
+                        <div class="church-event-recurring-end">
+                            <span><?php esc_html_e('Ends', 'church-events-calendar'); ?></span>
+                            <label>
+                                <input type="radio"
+                                    name="cec_recurrence_end_type"
+                                    value="never" <?php checked($form_state['end_type'], 'never'); ?>
+                                />
+                                <?php esc_html_e('Never', 'church-events-calendar'); ?>
+                            </label>
+                            <label>
+                                <input type="radio"
+                                    name="cec_recurrence_end_type"
+                                    value="count" <?php checked($form_state['end_type'], 'count'); ?>
+                                />
+                                <?php esc_html_e('After', 'church-events-calendar'); ?>
+                                <input type="number"
+                                    min="1"
+                                    name="cec_recurrence_end_count"
+                                    value="<?php echo esc_attr($end_count_value); ?>"
+                                />
+                                <?php esc_html_e('occurrences', 'church-events-calendar'); ?>
+                            </label>
+                            <label>
+                                <input type="radio"
+                                    name="cec_recurrence_end_type"
+                                    value="until" <?php checked($form_state['end_type'], 'until'); ?>
+                                />
+                                <?php esc_html_e('On date', 'church-events-calendar'); ?>
+                                <input type="date"
+                                    name="cec_recurrence_end_date"
+                                    value="<?php echo esc_attr($end_date_value); ?>"
+                                />
+                            </label>
+                        </div>
+                        <p class="description">
+                            <?php esc_html_e('Weekly settings apply only when “Weekly” frequency is selected. Monthly repeats occur on the same day of the month as the event start date.', 'church-events-calendar'); ?>
+                        </p>
+                    <?php endif; ?>
                 </div>
             </div>
         </div>
@@ -231,16 +384,16 @@ final class Event_Meta_Boxes
         $start_meridiem = isset($_POST['_event_start_meridiem'])
             ? sanitize_text_field(wp_unslash($_POST['_event_start_meridiem']))
             : '';
-        $end_date = isset($_POST['_event_end_date'])
+        $event_end_date = isset($_POST['_event_end_date'])
             ? sanitize_text_field(wp_unslash($_POST['_event_end_date']))
             : '';
-        $end_hour = isset($_POST['_event_end_hour'])
+        $event_end_hour = isset($_POST['_event_end_hour'])
             ? sanitize_text_field(wp_unslash($_POST['_event_end_hour']))
             : '';
-        $end_minute = isset($_POST['_event_end_minute'])
+        $event_end_minute = isset($_POST['_event_end_minute'])
             ? sanitize_text_field(wp_unslash($_POST['_event_end_minute']))
             : '';
-        $end_meridiem = isset($_POST['_event_end_meridiem'])
+        $event_end_meridiem = isset($_POST['_event_end_meridiem'])
             ? sanitize_text_field(wp_unslash($_POST['_event_end_meridiem']))
             : '';
         $recurrence_weekdays = isset($_POST[Event_Meta_Repository::META_RECURRENCE_WEEKDAYS])
@@ -252,23 +405,85 @@ final class Event_Meta_Boxes
         $recurrence_interval = isset($_POST[Event_Meta_Repository::META_RECURRENCE_INTERVAL])
             ? (int) wp_unslash($_POST[Event_Meta_Repository::META_RECURRENCE_INTERVAL])
             : 1;
+        $settings = Settings::instance();
+        $frequency = isset($_POST['cec_recurrence_frequency'])
+            ? $this->sanitize_frequency(sanitize_text_field(wp_unslash((string) $_POST['cec_recurrence_frequency'])))
+            : 'weekly';
+        $end_type = isset($_POST['cec_recurrence_end_type'])
+            ? $this->sanitize_end_type(sanitize_text_field(wp_unslash((string) $_POST['cec_recurrence_end_type'])))
+            : 'never';
+        $end_count = isset($_POST['cec_recurrence_end_count'])
+            ? max(1, (int) wp_unslash($_POST['cec_recurrence_end_count']))
+            : null;
+        $recurrence_end_date = isset($_POST['cec_recurrence_end_date'])
+            ? sanitize_text_field(wp_unslash($_POST['cec_recurrence_end_date']))
+            : '';
+
+        if (! $settings->is_advanced_recurrence_enabled()) {
+            $frequency = 'weekly';
+            $end_type = 'never';
+            $end_count = null;
+            $recurrence_end_date = '';
+        }
+
+        if ($end_type !== 'count') {
+            $end_count = null;
+        }
+
+        if ($end_type !== 'until') {
+            $recurrence_end_date = '';
+        }
+
+        $location_mode = isset($_POST['event_location_mode'])
+            ? $this->sanitize_location_mode(sanitize_text_field(wp_unslash((string) $_POST['event_location_mode'])))
+            : 'default';
+        $location_saved_id = $location_mode === 'saved'
+            ? Location_Helper::sanitize_location_id(absint((int) ($_POST['event_location_saved_id'] ?? 0)))
+            : 0;
+        $custom_location_value = isset($_POST['event_location_custom'])
+            ? sanitize_text_field(wp_unslash((string) $_POST['event_location_custom']))
+            : '';
+
+        [$final_location, $location_mode, $location_saved_id] = $this->resolve_location_save_state(
+            $location_mode,
+            $location_saved_id,
+            $custom_location_value,
+            $settings
+        );
 
         $data = [
             Event_Meta_Repository::META_START => $this->combine_datetime($start_date, $start_hour, $start_minute, $start_meridiem),
-            Event_Meta_Repository::META_END => $this->combine_datetime($end_date, $end_hour, $end_minute, $end_meridiem),
-            Event_Meta_Repository::META_LOCATION => isset($_POST[Event_Meta_Repository::META_LOCATION])
-                ? wp_unslash($_POST[Event_Meta_Repository::META_LOCATION])
-                : '',
+            Event_Meta_Repository::META_END => $this->combine_datetime($event_end_date, $event_end_hour, $event_end_minute, $event_end_meridiem),
             Event_Meta_Repository::META_ALL_DAY => ! empty($_POST[Event_Meta_Repository::META_ALL_DAY]),
             Event_Meta_Repository::META_IS_RECURRING => ! empty($_POST[Event_Meta_Repository::META_IS_RECURRING]),
             Event_Meta_Repository::META_RECURRENCE_INTERVAL => max(1, $recurrence_interval),
             Event_Meta_Repository::META_RECURRENCE_WEEKDAYS => $recurrence_weekdays,
         ];
 
-        $data[Event_Meta_Repository::META_RRULE] = $this->build_weekly_rrule(
-            (bool) $data[Event_Meta_Repository::META_IS_RECURRING],
-            (int) $data[Event_Meta_Repository::META_RECURRENCE_INTERVAL],
-            $recurrence_weekdays
+        $data[Event_Meta_Repository::META_LOCATION] = $final_location;
+        $data[Event_Meta_Repository::META_LOCATION_MODE] = $location_mode;
+        $data[Event_Meta_Repository::META_LOCATION_ID] = $location_saved_id;
+
+        $start_datetime = null;
+        if ($data[Event_Meta_Repository::META_START] !== '') {
+            try {
+                $start_datetime = new DateTimeImmutable($data[Event_Meta_Repository::META_START]);
+            } catch (\Exception $e) { // phpcs:ignore Generic.CodeAnalysis.EmptyStatement
+                $start_datetime = null;
+            }
+        }
+
+        $data[Event_Meta_Repository::META_RRULE] = $this->build_rrule_from_form(
+            [
+                'enabled' => (bool) $data[Event_Meta_Repository::META_IS_RECURRING],
+                'frequency' => $frequency,
+                'interval' => (int) $data[Event_Meta_Repository::META_RECURRENCE_INTERVAL],
+                'weekdays' => $recurrence_weekdays,
+                'end_type' => $end_type,
+                'end_count' => $end_count,
+                'end_date' => $end_date,
+            ],
+            $start_datetime
         );
 
         $this->repository->save_meta($post_id, $data);
@@ -412,45 +627,155 @@ final class Event_Meta_Boxes
     }
 
     /**
-     * Data flow: UI form fields → weekly form state → RRULE string stored in meta.
-     * When editing, the RRULE becomes the canonical source and is parsed back
-     * into form state so legacy weekly controls stay in sync.
+     * @return array{mode:string,saved_id:int,custom_value:string}
      */
-    private function build_weekly_rrule(bool $enabled, int $interval, array $weekdays): string
+    private function resolve_location_form_state(array $meta, Settings $settings): array
     {
-        if (! $enabled) {
-            return '';
+        $mode = $this->sanitize_location_mode((string) ($meta[Event_Meta_Repository::META_LOCATION_MODE] ?? ''));
+        $saved_id = isset($meta[Event_Meta_Repository::META_LOCATION_ID])
+            ? Location_Helper::sanitize_location_id((int) $meta[Event_Meta_Repository::META_LOCATION_ID])
+            : 0;
+        $custom_value = (string) ($meta[Event_Meta_Repository::META_LOCATION] ?? '');
+
+        if ($mode === 'saved' && $saved_id === 0) {
+            $mode = 'default';
         }
 
-        $interval = max(1, $interval);
-        $codes = [];
-
-        foreach ($weekdays as $day) {
-            $code = $this->weekday_name_to_code($day);
-            if ($code) {
-                $codes[] = $code;
-            }
+        if ($mode === 'custom' && $custom_value === '') {
+            $mode = $settings->get_default_location_string() !== '' ? 'default' : 'custom';
         }
 
-        $codes = array_values(array_unique($codes));
-        sort($codes);
-
-        if (empty($codes)) {
-            return '';
+        if ($mode === '') {
+            $mode = $custom_value !== '' ? 'custom' : 'default';
         }
 
-        return sprintf('FREQ=WEEKLY;INTERVAL=%d;BYDAY=%s', $interval, implode(',', $codes));
+        return [
+            'mode' => $mode,
+            'saved_id' => $saved_id,
+            'custom_value' => $mode === 'custom' ? $custom_value : '',
+        ];
     }
 
     /**
-     * @return array{enabled: bool, interval: int, weekdays: array<int, string>}
+     * @return array{0:string,1:string,2:int}
      */
-    private function parse_weekly_rrule(string $rrule): array
+    private function resolve_location_save_state(string $mode, int $location_id, string $custom_location, Settings $settings): array
     {
+        $mode = $this->sanitize_location_mode($mode);
+
+        if ($mode === 'saved') {
+            $label = Location_Helper::get_location_label($location_id);
+            if ($label !== '') {
+                return [$label, 'saved', $location_id];
+            }
+            $mode = 'default';
+            $location_id = 0;
+        }
+
+        if ($mode === 'custom') {
+            if ($custom_location !== '') {
+                return [$custom_location, 'custom', 0];
+            }
+            $mode = 'default';
+        }
+
+        $default = $settings->get_default_location_string();
+        if ($default !== '') {
+            return [$default, 'default', 0];
+        }
+
+        return ['', 'default', 0];
+    }
+
+    private function sanitize_location_mode(string $mode): string
+    {
+        $mode = strtolower(trim($mode));
+        $allowed = ['default', 'custom', 'saved'];
+
+        return in_array($mode, $allowed, true) ? $mode : 'default';
+    }
+
+    /**
+     * Data flow:
+     * UI form fields → structured form state → RRULE string stored in meta.
+     * On edit, the RRULE is parsed back into form state so legacy weekly inputs stay in sync.
+     *
+     * Supported RRULE parts: FREQ (DAILY/WEEKLY/MONTHLY), INTERVAL, BYDAY (weekly),
+     * BYMONTHDAY (monthly), COUNT, and UNTIL.
+     */
+    private function build_rrule_from_form(array $form, ?DateTimeImmutable $start): string
+    {
+        if (! $form['enabled']) {
+            return '';
+        }
+
+        $frequency = strtoupper($form['frequency'] ?? 'WEEKLY');
+        $interval = max(1, (int) ($form['interval'] ?? 1));
+        $parts = ["FREQ={$frequency}", "INTERVAL={$interval}"];
+
+        if ($frequency === 'WEEKLY') {
+            $codes = [];
+            foreach ($form['weekdays'] as $weekday) {
+                $code = $this->weekday_name_to_code($weekday);
+                if ($code) {
+                    $codes[] = $code;
+                }
+            }
+
+            if (empty($codes) && $start instanceof DateTimeImmutable) {
+                $codes[] = $this->weekday_name_to_code(strtolower($start->format('l'))) ?? 'MO';
+            }
+
+            $codes = array_values(array_unique($codes));
+            sort($codes);
+
+            if (empty($codes)) {
+                return '';
+            }
+
+            $parts[] = 'BYDAY=' . implode(',', $codes);
+        } elseif ($frequency === 'MONTHLY') {
+            if (! $start instanceof DateTimeImmutable) {
+                return '';
+            }
+
+            $parts[] = 'BYMONTHDAY=' . $start->format('j');
+        }
+
+        if (($form['end_type'] ?? 'never') === 'count' && ! empty($form['end_count'])) {
+            $parts[] = 'COUNT=' . max(1, (int) $form['end_count']);
+        } elseif (($form['end_type'] ?? 'never') === 'until' && ! empty($form['end_date'])) {
+            $until = $this->format_until_value((string) $form['end_date'], $start);
+            if ($until) {
+                $parts[] = 'UNTIL=' . $until;
+            }
+        }
+
+        return implode(';', $parts);
+    }
+
+    /**
+     * @return array{
+     *     enabled: bool,
+     *     frequency: string,
+     *     interval: int,
+     *     weekdays: array<int, string>,
+     *     end_type: string,
+     *     end_count: ?int,
+     *     end_date: string
+     * }
+     */
+    private function parse_rrule_to_form_state(string $rrule): array
+    {
+        // TODO: Add PHPUnit coverage for daily/monthly RRULE parsing once admin tests exist.
         $state = [
             'enabled' => false,
+            'frequency' => 'weekly',
             'interval' => 1,
             'weekdays' => [],
+            'end_type' => 'never',
+            'end_count' => null,
+            'end_date' => '',
         ];
 
         $rrule = trim($rrule);
@@ -458,42 +783,93 @@ final class Event_Meta_Boxes
             return $state;
         }
 
-        $parts = [];
-
-        foreach (explode(';', strtoupper($rrule)) as $segment) {
-            if (strpos($segment, '=') === false) {
-                continue;
-            }
-
-            [$key, $value] = array_map('trim', explode('=', $segment, 2));
-            if ($key !== '') {
-                $parts[$key] = $value;
-            }
-        }
-
-        if (($parts['FREQ'] ?? '') !== 'WEEKLY') {
+        try {
+            $rule = new RecurrRule($rrule, null, null, $this->get_site_timezone()->getName());
+        } catch (InvalidRRule $e) {
             return $state;
         }
 
-        $interval = isset($parts['INTERVAL']) ? max(1, (int) $parts['INTERVAL']) : 1;
-        $weekdays = [];
-
-        if (isset($parts['BYDAY'])) {
-            foreach (explode(',', $parts['BYDAY']) as $code) {
-                $code = strtoupper(trim($code));
-                if (isset(self::WEEKDAY_CODE_TO_NAME[$code])) {
-                    $weekdays[] = self::WEEKDAY_CODE_TO_NAME[$code];
-                }
-            }
+        $frequency = strtolower($rule->getFreqAsText() ?? '');
+        if (! in_array($frequency, array_keys(self::FREQUENCY_OPTIONS), true)) {
+            return $state;
         }
 
-        $weekdays = array_values(array_unique($weekdays));
+        $state['enabled'] = true;
+        $state['frequency'] = $frequency;
+        $state['interval'] = max(1, (int) $rule->getInterval());
 
-        return [
-            'enabled' => true,
-            'interval' => $interval,
-            'weekdays' => $weekdays,
-        ];
+        if ($frequency === 'weekly') {
+            $codes = $rule->getByDay() ?? [];
+            $names = [];
+            foreach ($codes as $code) {
+                $name = $this->weekday_code_to_name($code);
+                if ($name) {
+                    $names[] = $name;
+                }
+            }
+            $state['weekdays'] = array_values(array_unique($names));
+        }
+
+        $count = $rule->getCount();
+        if ($count) {
+            $state['end_type'] = 'count';
+            $state['end_count'] = max(1, (int) $count);
+        } elseif ($rule->getUntil() instanceof DateTimeImmutable) {
+            $state['end_type'] = 'until';
+            $state['end_date'] = $rule->getUntil()
+                ->setTimezone($this->get_site_timezone())
+                ->format('Y-m-d');
+        }
+
+        return $state;
+    }
+
+    private function resolve_form_state(array $meta): array
+    {
+        $state = $this->parse_rrule_to_form_state((string) ($meta[Event_Meta_Repository::META_RRULE] ?? ''));
+
+        if (! $state['enabled']) {
+            $state['enabled'] = ! empty($meta[Event_Meta_Repository::META_IS_RECURRING]);
+            $state['frequency'] = 'weekly';
+            $state['interval'] = max(1, (int) ($meta[Event_Meta_Repository::META_RECURRENCE_INTERVAL] ?? 1));
+            $state['weekdays'] = $meta[Event_Meta_Repository::META_RECURRENCE_WEEKDAYS] ?? [];
+        }
+
+        return $state;
+    }
+
+    private function format_until_value(string $date, ?DateTimeImmutable $start): ?string
+    {
+        if ($date === '') {
+            return null;
+        }
+
+        $timezone = $start?->getTimezone() ?? $this->get_site_timezone();
+
+        try {
+            $until = new DateTimeImmutable($date . ' 23:59:59', $timezone);
+        } catch (\Exception $e) {
+            return null;
+        }
+
+        return $until
+            ->setTimezone(new DateTimeZone('UTC'))
+            ->format('Ymd\THis\Z');
+    }
+
+    private function sanitize_frequency(string $value): string
+    {
+        $value = strtolower($value);
+
+        return in_array($value, array_keys(self::FREQUENCY_OPTIONS), true) ? $value : 'weekly';
+    }
+
+    private function sanitize_end_type(string $value): string
+    {
+        $value = strtolower($value);
+        $allowed = ['never', 'count', 'until'];
+
+        return in_array($value, $allowed, true) ? $value : 'never';
     }
 
     private function weekday_name_to_code(string $day): ?string
@@ -501,5 +877,30 @@ final class Event_Meta_Boxes
         $day = strtolower($day);
 
         return self::WEEKDAY_NAME_TO_CODE[$day] ?? null;
+    }
+
+    private function weekday_code_to_name(string $code): ?string
+    {
+        $code = strtoupper($code);
+
+        return self::WEEKDAY_CODE_TO_NAME[$code] ?? null;
+    }
+
+    private function get_site_timezone(): DateTimeZone
+    {
+        static $timezone;
+
+        if ($timezone instanceof DateTimeZone) {
+            return $timezone;
+        }
+
+        if (function_exists('wp_timezone')) {
+            $candidate = wp_timezone();
+            if ($candidate instanceof DateTimeZone) {
+                return $timezone = $candidate;
+            }
+        }
+
+        return $timezone = new DateTimeZone(date_default_timezone_get());
     }
 }

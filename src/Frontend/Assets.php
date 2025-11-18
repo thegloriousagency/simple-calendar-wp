@@ -5,12 +5,17 @@ declare(strict_types=1);
 namespace Glorious\ChurchEvents\Frontend;
 
 use Glorious\ChurchEvents\Support\Hooks;
+use function current_time;
+use function esc_url_raw;
 use function file_exists;
+use function rest_url;
 use function trailingslashit;
 use function wp_enqueue_script;
 use function wp_enqueue_style;
+use function wp_localize_script;
 use function wp_register_script;
 use function wp_register_style;
+use function wp_create_nonce;
 
 /**
  * Handles frontend styles and scripts.
@@ -48,6 +53,19 @@ final class Assets
             [],
             $this->version,
             true
+        );
+
+        wp_localize_script(
+            'church-events-frontend',
+            'CECCalendarSettings',
+            [
+                'restUrl' => esc_url_raw(rest_url('church-events/v1/month-view')),
+                'nonce' => wp_create_nonce('wp_rest'),
+                'today' => [
+                    'year' => (int) current_time('Y'),
+                    'month' => (int) current_time('n'),
+                ],
+            ]
         );
     }
 
