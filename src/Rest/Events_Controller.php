@@ -18,14 +18,20 @@ use WP_REST_Server;
 use function __;
 use function determine_locale;
 use function add_action;
+use function array_filter;
 use function array_map;
 use function array_slice;
+use function array_values;
 use function get_permalink;
 use function get_the_title;
 use function get_locale;
 use function get_the_terms;
 use function is_numeric;
 use function is_wp_error;
+use function function_exists;
+use function pll_current_language;
+use function pll_get_post_language;
+use function pll_get_post;
 use function rest_ensure_response;
 use function sanitize_text_field;
 use function strcmp;
@@ -89,6 +95,10 @@ final class Events_Controller
                         'type' => 'integer',
                         'required' => false,
                     ],
+                    'lang' => [
+                        'type' => 'string',
+                        'required' => false,
+                    ],
                 ],
             ]
         );
@@ -106,6 +116,7 @@ final class Events_Controller
         $limit = $this->sanitize_limit($request->get_param('limit'));
         $category = $this->sanitize_taxonomy_param($request->get_param('category'));
         $tag = $this->sanitize_taxonomy_param($request->get_param('tag'));
+        $language = $this->determine_language($this->sanitize_language($request->get_param('lang')));
 
         $locale = $this->get_locale_code();
         $cache_key = Cache_Helper::build_events_cache_key(
@@ -114,7 +125,8 @@ final class Events_Controller
             $this->build_taxonomy_fragment($category),
             $this->build_taxonomy_fragment($tag),
             $limit !== null ? (string) $limit : 'none',
-            $locale
+            $locale,
+            $language
         );
 
         $cached = Cache_Helper::get_cached($cache_key);
@@ -122,7 +134,10 @@ final class Events_Controller
             return rest_ensure_response($cached);
         }
 
-        $posts = $this->query_events($rangeStart, $rangeEnd, $category, $tag);
+        $posts = $this->filter_posts_by_language(
+            $this->query_events($rangeStart, $rangeEnd, $category, $tag),
+            $language
+        );
 
         $occurrences = [];
 
@@ -135,7 +150,7 @@ final class Events_Controller
                 $occurrences[] = [
                     'event_id' => (int) $post->ID,
                     'title' => get_the_title($post),
-                    'permalink' => get_permalink($post),
+                    'permalink' => $this->resolve_permalink($post, $language),
                     'start' => $occurrence['start']->format(DATE_ATOM),
                     'end' => isset($occurrence['end']) ? $occurrence['end']->format(DATE_ATOM) : null,
                     'all_day' => (bool) ($meta[Event_Meta_Repository::META_ALL_DAY] ?? false),
@@ -224,6 +239,45 @@ final class Events_Controller
         $query = new WP_Query($args);
 
         return $query->posts;
+    }
+
+    /**
+     * @param array<int, \WP_Post> $posts
+     * @return array<int, \WP_Post>
+     */
+    private function filter_posts_by_language(array $posts, ?string $language = null): array
+    {
+        if (! function_exists('pll_get_post_language')) {
+            return $posts;
+        }
+
+        if ($language === 'default' || $language === 'none') {
+            $language = null;
+        }
+
+        $current_language = $language;
+        if (! $current_language && function_exists('pll_current_language')) {
+            $current_language = pll_current_language('slug');
+        }
+
+        if (! $current_language) {
+            return $posts;
+        }
+
+        $filtered = array_filter(
+            $posts,
+            static function ($post) use ($current_language): bool {
+                $language = pll_get_post_language($post->ID, 'slug');
+
+                if ($language === null || $language === '') {
+                    return true;
+                }
+
+                return $language === $current_language;
+            }
+        );
+
+        return array_values($filtered);
     }
 
     /**
@@ -364,6 +418,59 @@ final class Events_Controller
         $locale = get_locale();
 
         return $locale ?: 'default';
+    }
+
+    private function sanitize_language($value): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        $language = sanitize_text_field(wp_unslash((string) $value));
+
+        if ($language === '' || $language === 'all' || $language === 'default' || $language === 'none') {
+            return null;
+        }
+
+        return $language;
+    }
+
+    private function determine_language(?string $language): ?string
+    {
+        if ($language !== null && $language !== '') {
+            return $language;
+        }
+
+        if (function_exists('pll_current_language')) {
+            $current = (string) pll_current_language('slug');
+            if ($current !== '') {
+                return $current;
+            }
+        }
+
+        return null;
+    }
+
+    private function resolve_permalink(\WP_Post $post, ?string $language): string
+    {
+        if (function_exists('pll_get_post')) {
+            $target_language = $language;
+            if (! $target_language && function_exists('pll_current_language')) {
+                $target_language = pll_current_language('slug');
+            }
+
+            if ($target_language) {
+                $translated_id = pll_get_post($post->ID, $target_language);
+                if ($translated_id) {
+                    $link = get_permalink($translated_id);
+                    if ($link) {
+                        return $link;
+                    }
+                }
+            }
+        }
+
+        return get_permalink($post);
     }
 }
 

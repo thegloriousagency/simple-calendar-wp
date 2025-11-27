@@ -16,6 +16,11 @@ use function current_time;
 use function sanitize_text_field;
 use function usort;
 use function wp_timezone;
+use function array_filter;
+use function array_values;
+use function function_exists;
+use function pll_current_language;
+use function pll_get_post_language;
 
 /**
  * Performs event queries and expands recurrence data.
@@ -59,11 +64,12 @@ final class Calendar_Query
         }
 
         $query = new WP_Query($query_args);
+        $posts = $this->filter_posts_by_language($query->posts, $args['language'] ?? null);
 
         $days = [];
 
         /** @var WP_Post $post */
-        foreach ($query->posts as $post) {
+        foreach ($posts as $post) {
             $events = $this->expand_event($post, $start, $end);
 
             foreach ($events as $event) {
@@ -197,19 +203,62 @@ final class Calendar_Query
     private function build_overlap_meta_query(DateTimeImmutable $range_start, DateTimeImmutable $range_end): array
     {
         return [
-            'relation' => 'AND',
+            'relation' => 'OR',
             [
-                'key' => Event_Meta_Repository::META_START,
-                'value' => $range_end->format('Y-m-d H:i:s'),
-                'compare' => '<=',
-                'type' => 'DATETIME',
+                'relation' => 'AND',
+                [
+                    'key' => Event_Meta_Repository::META_START,
+                    'value' => $range_end->format('Y-m-d H:i:s'),
+                    'compare' => '<=',
+                    'type' => 'DATETIME',
+                ],
+                [
+                    'key' => Event_Meta_Repository::META_END,
+                    'value' => $range_start->format('Y-m-d H:i:s'),
+                    'compare' => '>=',
+                    'type' => 'DATETIME',
+                ],
             ],
             [
-                'key' => Event_Meta_Repository::META_END,
-                'value' => $range_start->format('Y-m-d H:i:s'),
-                'compare' => '>=',
-                'type' => 'DATETIME',
+                'key' => Event_Meta_Repository::META_IS_RECURRING,
+                'value' => '1',
             ],
         ];
+    }
+
+    /**
+     * @param array<int, WP_Post> $posts
+     * @return array<int, WP_Post>
+     */
+    private function filter_posts_by_language(array $posts, ?string $language = null): array
+    {
+        if (! function_exists('pll_get_post_language')) {
+            return $posts;
+        }
+
+        if ($language === 'default' || $language === 'none') {
+            $language = null;
+        }
+
+        $language = $language ?: (function_exists('pll_current_language') ? (string) pll_current_language('slug') : '');
+
+        if ($language === '') {
+            return $posts;
+        }
+
+        $filtered = array_filter(
+            $posts,
+            static function (WP_Post $post) use ($language): bool {
+                $post_language = pll_get_post_language($post->ID, 'slug');
+
+                if ($post_language === null || $post_language === '') {
+                    return true;
+                }
+
+                return $post_language === $language;
+            }
+        );
+
+        return array_values($filtered);
     }
 }

@@ -23,6 +23,8 @@ use function plugin_dir_url;
 use function sanitize_text_field;
 use function shortcode_atts;
 use function wp_unslash;
+use function function_exists;
+use function pll_current_language;
 use const FILTER_SANITIZE_FULL_SPECIAL_CHARS;
 use const FILTER_SANITIZE_NUMBER_INT;
 use const INPUT_GET;
@@ -81,19 +83,26 @@ final class Calendar_Shortcode
 
         $this->assets->enqueue();
 
-        return $this->render_calendar_markup($params);
+        return $this->render_calendar_markup($params, $this->resolve_language_context($params['language'] ?? null));
     }
 
     /**
      * Render the calendar markup for a given year/month/category.
      *
-     * @param array{year:int, month:int, category:string} $params
+     * @param array{year:int, month:int, category:string, language?:?string} $params
      */
-    public function render_calendar_markup(array $params): string
+    public function render_calendar_markup(array $params, ?string $language = null): string
     {
         $category = $this->sanitize_category($params['category']);
         $locale = $this->get_locale_code();
-        $cache_key = Cache_Helper::build_month_cache_key($params['year'], $params['month'], $category, $locale);
+        $language = $language ?? $this->get_language_code();
+        $cache_key = Cache_Helper::build_month_cache_key(
+            $params['year'],
+            $params['month'],
+            $category,
+            $locale,
+            $language
+        );
 
         $cached = Cache_Helper::get_cached($cache_key);
         if ($cached !== null) {
@@ -103,7 +112,8 @@ final class Calendar_Shortcode
         $context = $this->build_calendar_context(
             $params['year'],
             $params['month'],
-            $category
+            $category,
+            $language
         );
 
         $html = $this->template_loader->render('calendar-month.php', $context);
@@ -114,15 +124,19 @@ final class Calendar_Shortcode
     }
 
     /**
-     * @return array{month_date: DateTimeImmutable, weeks_data: array, categories: array<int, WP_Term>, selected_category: string, nav: array<string, array<string, mixed>>}
+     * @return array{month_date: DateTimeImmutable, weeks_data: array, categories: array<int, WP_Term>, selected_category: string, nav: array<string, array<string, mixed>>, language: string}
      */
-    private function build_calendar_context(int $year, int $month, string $category): array
+    private function build_calendar_context(int $year, int $month, string $category, string $language): array
     {
         $monthDate = new DateTimeImmutable(sprintf('%d-%02d-01', $year, $month));
         $queryArgs = [
             'year' => $year,
             'month' => $month,
         ];
+
+        if ($language !== 'default' && $language !== '') {
+            $queryArgs['language'] = $language;
+        }
 
         if ($category !== '') {
             $queryArgs['category'] = $category;
@@ -136,7 +150,8 @@ final class Calendar_Shortcode
             'weeks_data' => $weeks,
             'categories' => $this->get_categories(),
             'selected_category' => $category,
-            'nav' => $this->build_navigation_links($monthDate, $category),
+            'nav' => $this->build_navigation_links($monthDate, $category, $language),
+            'language' => $language,
         ];
     }
 
@@ -156,6 +171,7 @@ final class Calendar_Shortcode
         $getYear = filter_input(INPUT_GET, 'cec_year', FILTER_SANITIZE_NUMBER_INT);
         $getMonth = filter_input(INPUT_GET, 'cec_month', FILTER_SANITIZE_NUMBER_INT);
         $getCategory = filter_input(INPUT_GET, 'cec_category', FILTER_SANITIZE_FULL_SPECIAL_CHARS);
+        $getLanguage = filter_input(INPUT_GET, 'cec_lang', FILTER_SANITIZE_FULL_SPECIAL_CHARS);
 
         if ($getYear !== null && $getYear !== false) {
             $year = (int) $getYear;
@@ -173,10 +189,20 @@ final class Calendar_Shortcode
         $month = max(1, min(12, $month));
         $category = $this->sanitize_category($category);
 
+        $language = null;
+        if ($getLanguage !== null && $getLanguage !== false) {
+            $language = $getLanguage;
+        } elseif (isset($atts['language'])) {
+            $language = (string) $atts['language'];
+        } elseif (isset($atts['lang'])) {
+            $language = (string) $atts['lang'];
+        }
+
         return [
             'year' => $year,
             'month' => $month,
             'category' => $category,
+            'language' => $language,
         ];
     }
 
@@ -208,23 +234,24 @@ final class Calendar_Shortcode
     /**
      * @return array<string, array<string, mixed>>
      */
-    private function build_navigation_links(DateTimeImmutable $monthDate, string $category): array
+    private function build_navigation_links(DateTimeImmutable $monthDate, string $category, string $language): array
     {
         $prev = $monthDate->modify('-1 month');
         $next = $monthDate->modify('+1 month');
         $today = new DateTimeImmutable('first day of this month');
 
         return [
-            'prev' => $this->build_nav_item($prev, $category),
-            'next' => $this->build_nav_item($next, $category),
-            'today' => $this->build_nav_item($today, $category),
+            'prev' => $this->build_nav_item($prev, $category, $language),
+            'next' => $this->build_nav_item($next, $category, $language),
+            'today' => $this->build_nav_item($today, $category, $language),
+            'current_label' => $this->format_month_label($monthDate, $language),
         ];
     }
 
     /**
      * @return array{year:int, month:int, url:string}
      */
-    private function build_nav_item(DateTimeImmutable $date, string $category): array
+    private function build_nav_item(DateTimeImmutable $date, string $category, string $language): array
     {
         $args = [
             'cec_year' => $date->format('Y'),
@@ -234,12 +261,28 @@ final class Calendar_Shortcode
         if ($category !== '') {
             $args['cec_category'] = $category;
         }
+        if ($language !== '' && $language !== 'default') {
+            $args['cec_lang'] = $language;
+        }
 
         return [
             'year' => (int) $date->format('Y'),
             'month' => (int) $date->format('n'),
             'url' => add_query_arg($args),
         ];
+    }
+
+    private function format_month_label(DateTimeImmutable $date, string $language): string
+    {
+        if (function_exists('pll__')) {
+            $month_key = 'cec_month_' . strtolower($date->format('F'));
+            $registered = pll__($month_key);
+            if ($registered !== $month_key) {
+                return sprintf('%s %s', $registered, $date->format('Y'));
+            }
+        }
+
+        return $date->format('F Y');
     }
 
     private function sanitize_category(?string $category): string
@@ -265,5 +308,29 @@ final class Calendar_Shortcode
         $locale = get_locale();
 
         return $locale ?: 'default';
+    }
+
+    private function get_language_code(): string
+    {
+        if (function_exists('pll_current_language')) {
+            $language = (string) pll_current_language('slug');
+            if ($language !== '') {
+                return $language;
+            }
+        }
+
+        return 'default';
+    }
+
+    private function resolve_language_context(?string $language): string
+    {
+        if ($language !== null && $language !== '') {
+            $language = sanitize_text_field(wp_unslash($language));
+            if ($language !== '') {
+                return $language;
+            }
+        }
+
+        return $this->get_language_code();
     }
 }

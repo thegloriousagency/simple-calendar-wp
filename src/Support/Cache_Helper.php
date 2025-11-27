@@ -6,6 +6,7 @@ namespace Glorious\ChurchEvents\Support;
 
 use Glorious\ChurchEvents\Post_Types\Event_Post_Type;
 use function apply_filters;
+use function defined;
 use function get_locale;
 use function get_option;
 use function get_post_type;
@@ -41,6 +42,8 @@ final class Cache_Helper
         Hooks::add_action('created_church_event_tag', [self::class, 'flush_all_caches'], 10, 0);
         Hooks::add_action('edited_church_event_tag', [self::class, 'flush_all_caches'], 10, 0);
         Hooks::add_action('delete_church_event_tag', [self::class, 'flush_all_caches'], 10, 0);
+
+        self::register_polylang_cache_hooks();
     }
 
     /**
@@ -112,15 +115,21 @@ final class Cache_Helper
     /**
      * Returns the cache key for a month-view HTML response.
      */
-    public static function build_month_cache_key(int $year, int $month, string $category, ?string $locale = null): string
-    {
+    public static function build_month_cache_key(
+        int $year,
+        int $month,
+        string $category,
+        ?string $locale = null,
+        ?string $language = null
+    ): string {
         return sprintf(
-            'cec_month_%d_%d_%02d_%s_%s',
+            'cec_month_%d_%d_%02d_%s_%s_%s',
             self::get_version(self::GROUP_MONTH),
             $year,
             $month,
             self::hash_fragment($category),
-            self::hash_fragment($locale ?? get_locale() ?: 'default')
+            self::hash_fragment($locale ?? get_locale() ?: 'default'),
+            self::hash_fragment($language ?? 'none')
         );
     }
 
@@ -133,17 +142,19 @@ final class Cache_Helper
         string $category,
         string $tag,
         string $limit,
-        ?string $locale = null
+        ?string $locale = null,
+        ?string $language = null
     ): string {
         return sprintf(
-            'cec_events_%d_%s_%s_%s_%s_%s_%s',
+            'cec_events_%d_%s_%s_%s_%s_%s_%s_%s',
             self::get_version(self::GROUP_EVENTS),
             self::hash_fragment($start),
             self::hash_fragment($end),
             self::hash_fragment($category),
             self::hash_fragment($tag),
             self::hash_fragment($limit),
-            self::hash_fragment($locale ?? get_locale() ?: 'default')
+            self::hash_fragment($locale ?? get_locale() ?: 'default'),
+            self::hash_fragment($language ?? 'none')
         );
     }
 
@@ -226,6 +237,16 @@ final class Cache_Helper
         }
 
         return $versions;
+    }
+
+    private static function register_polylang_cache_hooks(): void
+    {
+        if (! defined('POLYLANG_VERSION')) {
+            return;
+        }
+
+        Hooks::add_action('pll_save_post', [self::class, 'flush_if_event'], 10, 1);
+        Hooks::add_action('pll_translation_linked', [self::class, 'flush_if_event'], 10, 1);
     }
 }
 

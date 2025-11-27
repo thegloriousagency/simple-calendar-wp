@@ -46,6 +46,9 @@ const updateCalendar = async (container, params) => {
     container.classList.add('is-loading');
 
     try {
+        if (window.console && typeof window.console.debug === 'function') {
+            window.console.debug('[CEC] Updating calendar', params);
+        }
         const data = await fetchMonthView(params);
         replaceCalendar(container, data.html);
     } catch (error) {
@@ -66,6 +69,18 @@ const handleNavigation = (event, container) => {
     let year = parseInt(container.dataset.cecYear, 10);
     let month = parseInt(container.dataset.cecMonth, 10);
     const category = container.dataset.cecCategory || '';
+    const language = container.dataset.cecLanguage || '';
+    if (window.console && typeof window.console.debug === 'function') {
+        window.console.debug('[CEC] Navigation request', {
+            action,
+            year,
+            month,
+            category,
+            language,
+            targetYear: target.dataset.targetYear,
+            targetMonth: target.dataset.targetMonth,
+        });
+    }
 
     if (action === 'today' && settings.today) {
         year = parseInt(settings.today.year, 10);
@@ -75,7 +90,12 @@ const handleNavigation = (event, container) => {
         month = parseInt(target.dataset.targetMonth || month, 10);
     }
 
-    updateCalendar(container, { year, month, category });
+    updateCalendar(container, {
+        year,
+        month,
+        category,
+        lang: language || undefined,
+    });
 };
 
 const handleFilterChange = (event, container) => {
@@ -85,10 +105,18 @@ const handleFilterChange = (event, container) => {
     }
 
     const category = select.value || '';
+    const language = container.dataset.cecLanguage || '';
+    if (window.console && typeof window.console.debug === 'function') {
+        window.console.debug('[CEC] Filter change', {
+            category,
+            language,
+        });
+    }
     updateCalendar(container, {
         year: parseInt(container.dataset.cecYear, 10),
         month: parseInt(container.dataset.cecMonth, 10),
         category,
+        lang: language || undefined,
     });
 };
 

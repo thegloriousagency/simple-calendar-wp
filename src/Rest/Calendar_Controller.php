@@ -51,6 +51,10 @@ final class Calendar_Controller
                         'type' => 'string',
                         'required' => false,
                     ],
+                    'lang' => [
+                        'type' => 'string',
+                        'required' => false,
+                    ],
                 ],
             ]
         );
@@ -61,13 +65,15 @@ final class Calendar_Controller
         $year = $this->sanitize_year($request->get_param('year'));
         $month = $this->sanitize_month($request->get_param('month'));
         $category = $this->sanitize_category($request->get_param('category'));
+        $language = $this->sanitize_language($request->get_param('lang'));
 
         $html = $this->shortcode->render_calendar_markup(
             [
                 'year' => $year,
                 'month' => $month,
                 'category' => $category,
-            ]
+            ],
+            $language
         );
 
         return rest_ensure_response(
@@ -77,6 +83,7 @@ final class Calendar_Controller
                     'year' => $year,
                     'month' => $month,
                     'category' => $category,
+                    'language' => $language,
                 ],
             ]
         );
@@ -103,6 +110,17 @@ final class Calendar_Controller
         }
 
         return sanitize_text_field(wp_unslash((string) $value));
+    }
+
+    private function sanitize_language($value): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        $language = sanitize_text_field(wp_unslash((string) $value));
+
+        return $language === '' ? null : $language;
     }
 }
 

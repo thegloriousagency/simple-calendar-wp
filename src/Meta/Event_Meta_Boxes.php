@@ -9,12 +9,14 @@ use DateTimeZone;
 use Glorious\ChurchEvents\Admin\Settings;
 use Glorious\ChurchEvents\Post_Types\Event_Post_Type;
 use Glorious\ChurchEvents\Support\Hooks;
+use Glorious\ChurchEvents\Support\Language_Helper;
 use Glorious\ChurchEvents\Support\Location_Helper;
 use Recurr\Exception\InvalidRRule;
 use Recurr\Rule as RecurrRule;
 use WP_Post;
 use function absint;
 use function add_meta_box;
+use function remove_meta_box;
 use function array_map;
 use function array_unique;
 use function checked;
@@ -36,6 +38,7 @@ use function trim;
 use function wp_nonce_field;
 use function wp_unslash;
 use function wp_verify_nonce;
+use function function_exists;
 
 /**
  * Handles rendering and saving of event meta boxes.
@@ -81,6 +84,7 @@ final class Event_Meta_Boxes
     public function register(): void
     {
         Hooks::add_action('add_meta_boxes', [$this, 'add_meta_boxes']);
+        Hooks::add_action('add_meta_boxes', [$this, 'maybe_lock_featured_image'], 20, 2);
         Hooks::add_action('save_post', [$this, 'handle_save'], 10, 2);
     }
 
@@ -97,6 +101,36 @@ final class Event_Meta_Boxes
     }
 
     /**
+     * Locks the featured image meta box for translations.
+     *
+     * @param string $post_type
+     * @param WP_Post $post
+     */
+    public function maybe_lock_featured_image(string $post_type, $post): void
+    {
+        if ($post_type !== Event_Post_Type::POST_TYPE || ! $post instanceof WP_Post) {
+            return;
+        }
+
+        if (Language_Helper::is_primary_post((int) $post->ID)) {
+            return;
+        }
+
+        remove_meta_box('postimagediv', Event_Post_Type::POST_TYPE, 'side');
+
+        add_meta_box(
+            'postimagediv',
+            esc_html__('Featured image', 'church-events-calendar'),
+            static function (): void {
+                echo '<p>' . esc_html__('Featured images are shared across translations. Edit the primary language event to change it.', 'church-events-calendar') . '</p>';
+            },
+            Event_Post_Type::POST_TYPE,
+            'side',
+            'low'
+        );
+    }
+
+    /**
      * @param WP_Post $post
      */
     public function render_meta_box(WP_Post $post): void
@@ -108,6 +142,8 @@ final class Event_Meta_Boxes
         $form_state = $this->resolve_form_state($meta);
 
         $show_advanced = $settings->is_advanced_recurrence_enabled();
+        $is_primary = Language_Helper::is_primary_post((int) $post->ID);
+        $is_translation = ! $is_primary;
 
         if ($form_state['enabled']) {
             $meta[Event_Meta_Repository::META_IS_RECURRING] = true;
@@ -127,6 +163,14 @@ final class Event_Meta_Boxes
         $location_posts = Location_Helper::get_location_posts();
         $default_location_label = $settings->get_default_location_string();
         ?>
+        <?php if ($is_translation) : ?>
+            <div class="notice notice-info">
+                <p>
+                    <?php esc_html_e('Event schedule, location, and recurrence are managed in the primary language. Edit the original event to change these details.', 'church-events-calendar'); ?>
+                </p>
+            </div>
+            <fieldset class="church-event-meta-readonly" disabled="disabled">
+        <?php endif; ?>
         <div class="church-event-meta-fields">
             <?php
             [$start_date, $start_hour, $start_minute, $start_meridiem] = $this->split_datetime($meta[Event_Meta_Repository::META_START] ?? '');
@@ -257,14 +301,18 @@ final class Event_Meta_Boxes
                 });
             </script>
             <div class="church-event-meta-field church-event-meta-recurring">
-                <label>
-                    <input type="checkbox"
-                        name="<?php echo esc_attr(Event_Meta_Repository::META_IS_RECURRING); ?>"
-                        value="1" <?php checked($form_state['enabled'], true); ?>
-                    />
-                    <?php esc_html_e('Recurring Event', 'church-events-calendar'); ?>
-                </label>
-                <div class="church-event-recurring-details">
+                <fieldset class="church-event-recurring-fieldset">
+                    <legend class="screen-reader-text">
+                        <?php esc_html_e('Recurrence settings', 'church-events-calendar'); ?>
+                    </legend>
+                    <label>
+                        <input type="checkbox"
+                            name="<?php echo esc_attr(Event_Meta_Repository::META_IS_RECURRING); ?>"
+                            value="1" <?php checked($form_state['enabled'], true); ?>
+                        />
+                        <?php esc_html_e('Recurring Event', 'church-events-calendar'); ?>
+                    </label>
+                    <div class="church-event-recurring-details">
                     <label>
                         <?php esc_html_e('Repeat every', 'church-events-calendar'); ?>
                         <input type="number"
@@ -341,9 +389,13 @@ final class Event_Meta_Boxes
                             <?php esc_html_e('Weekly settings apply only when “Weekly” frequency is selected. Monthly repeats occur on the same day of the month as the event start date.', 'church-events-calendar'); ?>
                         </p>
                     <?php endif; ?>
-                </div>
+                    </div>
+                </fieldset>
             </div>
         </div>
+        <?php if ($is_translation) : ?>
+            </fieldset>
+        <?php endif; ?>
         <?php
     }
 
@@ -369,6 +421,10 @@ final class Event_Meta_Boxes
         }
 
         if (! current_user_can('edit_post', $post_id)) {
+            return;
+        }
+
+        if (! Language_Helper::is_primary_post($post_id)) {
             return;
         }
 
@@ -481,7 +537,7 @@ final class Event_Meta_Boxes
                 'weekdays' => $recurrence_weekdays,
                 'end_type' => $end_type,
                 'end_count' => $end_count,
-                'end_date' => $end_date,
+                'end_date' => $recurrence_end_date,
             ],
             $start_datetime
         );
@@ -814,9 +870,13 @@ final class Event_Meta_Boxes
         if ($count) {
             $state['end_type'] = 'count';
             $state['end_count'] = max(1, (int) $count);
-        } elseif ($rule->getUntil() instanceof DateTimeImmutable) {
+        } elseif ($rule->getUntil() instanceof \DateTimeInterface) {
+            $until = $rule->getUntil();
+            if (! $until instanceof DateTimeImmutable) {
+                $until = DateTimeImmutable::createFromInterface($until);
+            }
             $state['end_type'] = 'until';
-            $state['end_date'] = $rule->getUntil()
+            $state['end_date'] = $until
                 ->setTimezone($this->get_site_timezone())
                 ->format('Y-m-d');
         }
@@ -903,4 +963,5 @@ final class Event_Meta_Boxes
 
         return $timezone = new DateTimeZone(date_default_timezone_get());
     }
+
 }

@@ -14,6 +14,7 @@ use Glorious\ChurchEvents\Meta\Event_Meta_Repository;
 use Glorious\ChurchEvents\Meta\Location_Meta_Boxes;
 use Glorious\ChurchEvents\Post_Types\Event_Post_Type;
 use Glorious\ChurchEvents\Post_Types\Location_Post_Type;
+use Glorious\ChurchEvents\Integrations\Polylang_Integration;
 use Glorious\ChurchEvents\Rest\Calendar_Controller;
 use Glorious\ChurchEvents\Rest\Events_Controller;
 use Glorious\ChurchEvents\Recurrence\Recurrence_Engine;
@@ -75,6 +76,7 @@ final class Plugin
         (new Events_Controller(new Event_Meta_Repository(), new Recurrence_Engine()))->register();
         (new List_Shortcode(null, $template_loader, $frontend_assets))->register();
         (new Admin_Tools($meta_repository))->register();
+        (new Polylang_Integration())->register();
     }
 
     /**

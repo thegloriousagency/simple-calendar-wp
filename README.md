@@ -90,3 +90,15 @@ Lightweight, developer-friendly events calendar plugin tailored for churches. Pr
 - Automated tests live under `tests/` (currently focused on recurrence engine behavior).
 - Admin Tools (Events → Tools) provide an Event Debug Inspector, cache stats/clear button, and log viewer. Logs live in `wp-content/uploads/church-events/logs.log`.
 
+### Disabling cache during development
+
+To bypass the transient cache while you’re building features, drop this into `functions.php` (or a mu-plugin):
+
+```php
+if (defined('WP_DEBUG') && WP_DEBUG) {
+    add_filter('cec_enable_cache', '__return_false');
+}
+```
+
+You can also shorten cache lifetimes with the `cec_month_cache_ttl` and `cec_events_cache_ttl` filters if you prefer to keep caching on but refresh more frequently.
+
